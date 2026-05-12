@@ -806,23 +806,30 @@ def _scrape_reddit_via_apify(
         days = 7
     time_filter = _days_to_reddit_filter(days)
 
-    # Build Reddit search URLs — one per keyword across the Indian subreddit cluster
+    # Build Reddit search URLs — keywords × subreddit cluster + focused per-sub searches
     start_urls: list[dict] = []
-    for kw in keywords[:6]:
+    for kw in keywords[:8]:
         kw_enc = quote(kw)
-        # Search across Indian subreddit cluster
         start_urls.append({
             "url": f"https://www.reddit.com/r/{_INDIA_SUB_CLUSTER}/search/?q={kw_enc}&sort=new&t={time_filter}&restrict_sr=on"
         })
-    # Also browse focused subreddits by keyword
-    for sub in _FOCUSED_SUBS[:3]:
-        kw_enc = quote(" OR ".join(keywords[:3]))
+    # Brand-specific searches in India subreddits
+    for brand in brands[:4]:
+        brand_enc = quote(f"{brand} India")
+        start_urls.append({
+            "url": f"https://www.reddit.com/r/{_INDIA_SUB_CLUSTER}/search/?q={brand_enc}&sort=new&t={time_filter}&restrict_sr=on"
+        })
+    # Focused subreddits by combined keywords
+    for sub in _FOCUSED_SUBS[:4]:
+        kw_enc = quote(" OR ".join(keywords[:4]))
         start_urls.append({
             "url": f"https://www.reddit.com/r/{sub}/search/?q={kw_enc}&sort=new&t={time_filter}&restrict_sr=on"
         })
 
-    actor_input = {"startUrls": start_urls, "maxItems": 300}
-    logger.info(f"Apify Reddit: {len(start_urls)} search URLs, t={time_filter}, maxItems=300")
+    # Scale maxItems to date range: ~20 items/day target, minimum 300, maximum 800
+    max_items = min(max(300, days * 20), 800)
+    actor_input = {"startUrls": start_urls, "maxItems": max_items}
+    logger.info(f"Apify Reddit: {len(start_urls)} search URLs, t={time_filter}, maxItems={max_items}")
 
     items = _run_apify_actor(settings.APIFY_REDDIT_ACTOR, actor_input)
     if not items:
