@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # The rest get instant keyword classification. This keeps the pipeline
 # under ~30 seconds regardless of how many records are scraped.
 _MAX_AI_RECORDS = 500
-_AI_BATCH_SIZE = 15      # 15 records × ~70 tokens/record ≈ 1,050 tokens output, safely under 2,000
+_AI_BATCH_SIZE = 10      # 10 records × ~100 tokens/record ≈ 1,000 tokens output, well under 2,000
 _AI_WORKERS = 4          # parallel API calls
 
 CLASSIFICATION_COLUMNS = [
