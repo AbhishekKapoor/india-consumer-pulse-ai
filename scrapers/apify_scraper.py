@@ -1066,23 +1066,38 @@ def _scrape_amazon(
         logger.warning("Amazon: ASIN discovery returned no products — skipping this source.")
         return None
 
-    # Scale reviews per product to the date window.
-    # Amazon reviews are sorted newest-first so a larger window → more reviews needed.
+    # Scale pages per product to the date window (10 reviews/page, capped at 3 for cost control)
     try:
         _days = max(1, (datetime.strptime(date_to, "%Y-%m-%d") -
                         datetime.strptime(date_from, "%Y-%m-%d")).days + 1)
     except Exception:
         _days = 30
     reviews_per_product = min(max(20, _days * 2), 200)
+    max_pages = min(max(1, reviews_per_product // 10), 3)
 
-    # axesso_data/amazon-reviews-scraper uses productUrls as plain string array
+    # Extract ASINs from cached URLs (format: https://www.amazon.in/dp/{ASIN})
+    _ASIN_RE = re.compile(r"/dp/([A-Z0-9]{10})")
+    asins: list[str] = []
+    for url in product_urls[:20]:
+        m = _ASIN_RE.search(url)
+        if m:
+            asins.append(m.group(1))
+
+    if not asins:
+        logger.warning("Amazon: no valid ASINs extracted from product URLs — skipping.")
+        return None
+
+    # axesso_data/amazon-reviews-scraper input schema:
+    # input array with one entry per ASIN: {asin, domainCode, sortBy, maxPages}
     actor_input = {
-        "productUrls": product_urls[:20],
-        "maxReviewsPerProduct": reviews_per_product,
+        "input": [
+            {"asin": asin, "domainCode": "in", "sortBy": "recent", "maxPages": max_pages}
+            for asin in asins
+        ]
     }
     logger.info(
-        f"Amazon: scraping {len(product_urls)} products, "
-        f"{reviews_per_product} reviews/product ({_days}-day window)"
+        f"Amazon: scraping {len(asins)} ASINs, "
+        f"{max_pages} pages/product (~{max_pages * 10} reviews each, {_days}-day window)"
     )
     items = _run_apify_actor(settings.APIFY_AMAZON_ACTOR, actor_input)
     if not items:
