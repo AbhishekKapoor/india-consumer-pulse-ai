@@ -146,9 +146,11 @@ def _run_apify_actor(actor_id: str, input_data: dict) -> Optional[list[dict]]:
     base = "https://api.apify.com/v2"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
+    # Apify REST API uses tilde as username/actor separator: trudax~actor-name
+    actor_slug = actor_id.replace("/", "~")
     try:
         start = requests.post(
-            f"{base}/acts/{actor_id}/runs",
+            f"{base}/acts/{actor_slug}/runs",
             headers=headers,
             json=input_data,
             timeout=30,
@@ -157,7 +159,7 @@ def _run_apify_actor(actor_id: str, input_data: dict) -> Optional[list[dict]]:
         run_id = start.json()["data"]["id"]
         logger.info(f"Apify run started: {run_id} | actor: {actor_id}")
     except Exception as e:
-        logger.error(f"Failed to start Apify actor {actor_id}: {e}")
+        logger.error(f"Failed to start Apify actor {actor_slug}: {e}")
         return None
 
     for _ in range(36):  # poll up to 3 minutes
