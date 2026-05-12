@@ -162,7 +162,7 @@ def _run_apify_actor(actor_id: str, input_data: dict) -> Optional[list[dict]]:
         logger.error(f"Failed to start Apify actor {actor_slug}: {e}")
         return None
 
-    for _ in range(36):  # poll up to 3 minutes
+    for _ in range(96):  # poll up to 8 minutes (large date ranges take longer)
         time.sleep(5)
         try:
             resp = requests.get(f"{base}/actor-runs/{run_id}", headers=headers, timeout=15)
@@ -826,8 +826,8 @@ def _scrape_reddit_via_apify(
             "url": f"https://www.reddit.com/r/{sub}/search/?q={kw_enc}&sort=new&t={time_filter}&restrict_sr=on"
         })
 
-    # Scale maxItems to date range: ~20 items/day target, minimum 300, maximum 800
-    max_items = min(max(300, days * 20), 800)
+    # ~20 items/day, minimum 300 — no upper cap (polling timeout scales below)
+    max_items = max(300, days * 20)
     actor_input = {"startUrls": start_urls, "maxItems": max_items}
     logger.info(f"Apify Reddit: {len(start_urls)} search URLs, t={time_filter}, maxItems={max_items}")
 
