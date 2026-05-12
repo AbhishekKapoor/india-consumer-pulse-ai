@@ -280,16 +280,6 @@ def _scrape_reddit(
     except Exception:
         days = 7
 
-    # When running with an Apify token (e.g. on cloud hosting where Reddit blocks datacenter IPs),
-    # use the Apify actor first — it routes through residential proxies that Reddit accepts.
-    if settings.apify_configured:
-        logger.info(f"Reddit: Apify token present — trying actor first (avoids cloud IP blocks)")
-        df = _scrape_reddit_via_apify(keywords, brands, date_from, date_to, category)
-        if df is not None and not df.empty:
-            logger.info(f"Reddit: Apify actor returned {len(df)} records")
-            return df
-        logger.info("Reddit: Apify actor returned no data — falling back to native API")
-
     logger.info(f"Reddit: {days}-day range — using native JSON API")
     df = _scrape_reddit_native(keywords, brands, date_from, date_to, category, days)
 
@@ -805,8 +795,7 @@ def _scrape_reddit_historical(
         f"({skipped_irrelevant} off-topic, {skipped_non_india} non-India dropped)"
     )
     if not rows:
-        logger.warning("PullPush returned no data — falling back to Apify actor")
-        return _scrape_reddit_via_apify(keywords, brands, date_from, date_to, category)
+        logger.warning("PullPush returned no data")
     return pd.DataFrame(rows, columns=NORMALIZED_COLUMNS)
 
 
