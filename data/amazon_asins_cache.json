@@ -1,0 +1,65 @@
+{
+  "brands": {
+    "Apple": {
+      "urls": [
+        "https://www.amazon.in/dp/B0996774YG",
+        "https://www.amazon.in/dp/B0DMW5KQQ2",
+        "https://www.amazon.in/dp/B0C13K4XRS",
+        "https://www.amazon.in/dp/B01MA1MJ6H",
+        "https://www.amazon.in/dp/B0GR64G4H6"
+      ],
+      "discovered_at": "2026-05-11T17:33:39.460568"
+    },
+    "Lenovo": {
+      "urls": [
+        "https://www.amazon.in/dp/B0DJH46BBL",
+        "https://www.amazon.in/dp/B09B23P4F4",
+        "https://www.amazon.in/dp/B0CGWXFGKJ",
+        "https://www.amazon.in/dp/B0B3Y8XGC8",
+        "https://www.amazon.in/dp/B0DQJQ4YS6"
+      ],
+      "discovered_at": "2026-05-11T17:33:39.460568"
+    },
+    "HP": {
+      "urls": [
+        "https://www.amazon.in/dp/B0D73SQRM1",
+        "https://www.amazon.in/dp/B082HZVSPP",
+        "https://www.amazon.in/dp/B0G9LXCVH2",
+        "https://www.amazon.in/dp/B0G9LYWZLW",
+        "https://www.amazon.in/dp/B0DSXCL42V"
+      ],
+      "discovered_at": "2026-05-11T17:33:39.460568"
+    },
+    "Dell": {
+      "urls": [
+        "https://www.amazon.in/dp/B09RQ4D5QJ",
+        "https://www.amazon.in/dp/B0D3KWG189",
+        "https://www.amazon.in/dp/B0G9LXCVH2",
+        "https://www.amazon.in/dp/B0G9LYWZLW",
+        "https://www.amazon.in/dp/B0G1BS17WC"
+      ],
+      "discovered_at": "2026-05-11T17:33:39.460568"
+    },
+    "ASUS": {
+      "urls": [
+        "https://www.amazon.in/dp/B0DWWVDN73",
+        "https://www.amazon.in/dp/B0CGX2QQPT",
+        "https://www.amazon.in/dp/B0GSK8BGQZ",
+        "https://www.amazon.in/dp/B0BYP4RMS5",
+        "https://www.amazon.in/dp/B0GZQ4LM8L"
+      ],
+      "discovered_at": "2026-05-11T17:33:39.460568"
+    },
+    "Acer": {
+      "urls": [
+        "https://www.amazon.in/dp/B0BC1WF9HN",
+        "https://www.amazon.in/dp/B0B8JG56HN",
+        "https://www.amazon.in/dp/B0B8JHFP1V",
+        "https://www.amazon.in/dp/B0G9LXCVH2",
+        "https://www.amazon.in/dp/B0G9LYWZLW"
+      ],
+      "discovered_at": "2026-05-11T17:33:39.460568"
+    }
+  },
+  "updated_at": "2026-05-11T17:33:39.460568"
+}

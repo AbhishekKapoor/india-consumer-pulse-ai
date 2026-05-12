@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+data/raw/
+data/processed/
+data/insights/
+data/reports/
+logs/*.log
+.streamlit/secrets.toml
+.claude/
+test_report.pdf
