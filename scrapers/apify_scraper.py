@@ -1075,11 +1075,10 @@ def _scrape_amazon(
         _days = 30
     reviews_per_product = min(max(20, _days * 2), 200)
 
-    # epctex/amazon-reviews-scraper uses startUrls + maxReviews (not productUrls/maxReviewsPerProduct)
+    # axesso_data/amazon-reviews-scraper uses productUrls as plain string array
     actor_input = {
-        "startUrls": [{"url": url} for url in product_urls[:20]],
-        "maxReviews": reviews_per_product,
-        "proxyConfiguration": {"useApifyProxy": True},
+        "productUrls": product_urls[:20],
+        "maxReviewsPerProduct": reviews_per_product,
     }
     logger.info(
         f"Amazon: scraping {len(product_urls)} products, "
@@ -1091,14 +1090,14 @@ def _scrape_amazon(
 
     rows, skipped = [], 0
     for item in items:
-        # epctex actor output fields: body/text + title; fallback to legacy field names
-        review_text  = item.get("body", item.get("text", item.get("reviewText", "")))
-        review_title = item.get("title", item.get("reviewTitle", ""))
+        # axesso output: reviewText + reviewTitle (same as original field names)
+        review_text  = item.get("reviewText", item.get("body", item.get("text", "")))
+        review_title = item.get("reviewTitle", item.get("title", ""))
         combined     = f"{review_title} {review_text}".strip()
         if len(combined) < 30:
             continue
 
-        raw_date = item.get("date", item.get("reviewDate", item.get("scrapedAt", "")))
+        raw_date = item.get("reviewDate", item.get("date", item.get("scrapedAt", "")))
         try:
             date_str = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00")).strftime("%Y-%m-%d")
         except Exception:
@@ -1108,10 +1107,10 @@ def _scrape_amazon(
         # is still a valid brand signal. Include all fetched reviews but keep the date
         # so the AI can weigh recency in its analysis.
 
-        product      = item.get("productTitle", item.get("product", ""))
-        reviewer     = item.get("reviewer", item.get("reviewerName", item.get("reviewId", "anon")))
-        author_hash  = hashlib.md5(str(reviewer).encode()).hexdigest()[:10]
-        rating       = item.get("rating", item.get("ratingText", 0))
+        product     = item.get("productTitle", item.get("product", ""))
+        reviewer    = item.get("reviewerName", item.get("reviewer", item.get("reviewId", "anon")))
+        author_hash = hashlib.md5(str(reviewer).encode()).hexdigest()[:10]
+        rating      = item.get("rating", item.get("ratingText", 0))
         try:
             rating = float(str(rating).split("/")[0].strip())
         except Exception:
@@ -1123,16 +1122,16 @@ def _scrape_amazon(
             "category":     category,
             "brand":        _detect_brand(f"{product} {combined}", brands),
             "topic":        review_title[:120] or product[:120],
-            "url":          item.get("url", item.get("reviewUrl", item.get("productUrl", ""))),
+            "url":          item.get("reviewUrl", item.get("url", item.get("productUrl", ""))),
             "author":       f"user_{author_hash}",
             "text":         combined[:1500],
             "engagement":   item.get("helpfulVotes", item.get("helpful", 0)),
             "raw_metadata": json.dumps({
-                "product":        product[:100],
-                "asin":           item.get("asin", item.get("productAsin", "")),
-                "rating":         rating,
-                "verified":       item.get("verifiedPurchase", item.get("verified", True)),
-                "total_reviews":  item.get("totalReviews", 0),
+                "product":       product[:100],
+                "asin":          item.get("productAsin", item.get("asin", "")),
+                "rating":        rating,
+                "verified":      item.get("verifiedPurchase", item.get("verified", True)),
+                "total_reviews": item.get("totalReviews", 0),
             }),
         })
 
