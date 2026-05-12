@@ -10,7 +10,7 @@ class Settings:
     APIFY_API_TOKEN: str = os.getenv("APIFY_API_TOKEN", "")
     APIFY_REDDIT_ACTOR: str = os.getenv("APIFY_REDDIT_ACTOR", "trudax/reddit-scraper-lite")
     APIFY_YOUTUBE_ACTOR: str = os.getenv("APIFY_YOUTUBE_ACTOR", "streamers~youtube-scraper")
-    APIFY_AMAZON_ACTOR: str = os.getenv("APIFY_AMAZON_ACTOR", "junglee/amazon-reviews-scraper")
+    APIFY_AMAZON_ACTOR: str = os.getenv("APIFY_AMAZON_ACTOR", "epctex/amazon-reviews-scraper")
     APIFY_NEWS_ACTOR: str = os.getenv("APIFY_NEWS_ACTOR", "apify~google-news-scraper")
 
     # OpenRouter

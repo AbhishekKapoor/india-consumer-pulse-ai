@@ -834,10 +834,10 @@ def _scrape_youtube(
     for kw in keywords[:4]:
         search_queries.append(f"{kw} India")
 
-    # streamers~youtube-scraper input schema:
-    # searchKeywords (not searchQueries), downloadComments (bool, not commentsMode)
+    # streamers~youtube-scraper expects searchKeywords as a newline-separated STRING,
+    # not a list. Passing a list causes the actor to FAIL immediately with no details.
     actor_input = {
-        "searchKeywords": search_queries[:8],
+        "searchKeywords": "\n".join(search_queries[:8]),
         "maxResults": 20,
         "downloadComments": True,
         "maxComments": 30,
@@ -918,10 +918,11 @@ def _scrape_amazon(
         _days = 30
     reviews_per_product = min(max(20, _days * 2), 200)
 
+    # epctex/amazon-reviews-scraper uses startUrls + maxReviews (not productUrls/maxReviewsPerProduct)
     actor_input = {
-        "productUrls": product_urls[:20],
-        "maxReviewsPerProduct": reviews_per_product,
-        "headless": True,
+        "startUrls": [{"url": url} for url in product_urls[:20]],
+        "maxReviews": reviews_per_product,
+        "proxyConfiguration": {"useApifyProxy": True},
     }
     logger.info(
         f"Amazon: scraping {len(product_urls)} products, "
@@ -933,13 +934,14 @@ def _scrape_amazon(
 
     rows, skipped = [], 0
     for item in items:
-        review_text  = item.get("reviewText", "")
-        review_title = item.get("reviewTitle", "")
+        # epctex actor output fields: body/text + title; fallback to legacy field names
+        review_text  = item.get("body", item.get("text", item.get("reviewText", "")))
+        review_title = item.get("title", item.get("reviewTitle", ""))
         combined     = f"{review_title} {review_text}".strip()
         if len(combined) < 30:
             continue
 
-        raw_date = item.get("reviewDate", item.get("scrapedAt", ""))
+        raw_date = item.get("date", item.get("reviewDate", item.get("scrapedAt", "")))
         try:
             date_str = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00")).strftime("%Y-%m-%d")
         except Exception:
@@ -949,9 +951,14 @@ def _scrape_amazon(
         # is still a valid brand signal. Include all fetched reviews but keep the date
         # so the AI can weigh recency in its analysis.
 
-        product      = item.get("productTitle", "")
-        reviewer     = item.get("reviewerName", item.get("reviewId", "anon"))
+        product      = item.get("productTitle", item.get("product", ""))
+        reviewer     = item.get("reviewer", item.get("reviewerName", item.get("reviewId", "anon")))
         author_hash  = hashlib.md5(str(reviewer).encode()).hexdigest()[:10]
+        rating       = item.get("rating", item.get("ratingText", 0))
+        try:
+            rating = float(str(rating).split("/")[0].strip())
+        except Exception:
+            rating = 0
 
         rows.append({
             "date":         date_str,
@@ -959,17 +966,16 @@ def _scrape_amazon(
             "category":     category,
             "brand":        _detect_brand(f"{product} {combined}", brands),
             "topic":        review_title[:120] or product[:120],
-            "url":          item.get("reviewUrl", item.get("productUrl", "")),
+            "url":          item.get("url", item.get("reviewUrl", item.get("productUrl", ""))),
             "author":       f"user_{author_hash}",
             "text":         combined[:1500],
-            "engagement":   item.get("helpfulVotes", 0),
+            "engagement":   item.get("helpfulVotes", item.get("helpful", 0)),
             "raw_metadata": json.dumps({
-                "product":          product[:100],
-                "asin":             item.get("productAsin", ""),
-                "rating":           item.get("rating", 0),
-                "product_rating":   item.get("productRating", 0),
-                "verified":         item.get("verifiedPurchase", True),
-                "total_reviews":    item.get("totalReviews", 0),
+                "product":        product[:100],
+                "asin":           item.get("asin", item.get("productAsin", "")),
+                "rating":         rating,
+                "verified":       item.get("verifiedPurchase", item.get("verified", True)),
+                "total_reviews":  item.get("totalReviews", 0),
             }),
         })
 
