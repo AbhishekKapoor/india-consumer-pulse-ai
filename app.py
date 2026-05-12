@@ -89,7 +89,7 @@ with st.sidebar:
         _extra = [b.strip() for b in custom_brands_raw.split(",") if b.strip()]
         brands_selected = list(dict.fromkeys(brands_selected + _extra))
 
-    _SOURCE_OPTIONS = ["Reddit India", "YouTube", "Amazon Reviews", "Google News", "Sample Data"]
+    _SOURCE_OPTIONS = ["Reddit India", "YouTube", "Google News", "Sample Data"]
     data_sources = st.multiselect(
         "Data Sources",
         options=_SOURCE_OPTIONS,
