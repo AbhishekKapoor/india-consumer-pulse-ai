@@ -10,13 +10,14 @@ Apify API docs: https://docs.apify.com/api/v2
 import hashlib
 import json
 import logging
+import re
 import time
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 
 import pandas as pd
 import requests
@@ -821,78 +822,234 @@ def _scrape_reddit_via_apify(
 
 # ── YouTube ───────────────────────────────────────────────────
 
+_YT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-IN,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
+
+
+def _parse_yt_relative_date(time_str: str, date_from: str, date_to: str) -> Optional[str]:
+    """Convert YouTube relative timestamps ('3 days ago') to YYYY-MM-DD, filtered to range."""
+    if not time_str:
+        return date_to
+    t = time_str.lower().strip()
+    now = datetime.now()
+    try:
+        n = int(re.search(r"\d+", t).group()) if re.search(r"\d+", t) else 1
+        if "hour" in t or "minute" in t or "second" in t:
+            d = now
+        elif "day" in t:
+            d = now - timedelta(days=n)
+        elif "week" in t:
+            d = now - timedelta(weeks=n)
+        elif "month" in t:
+            d = now - timedelta(days=n * 30)
+        elif "year" in t:
+            d = now - timedelta(days=n * 365)
+        else:
+            d = now
+        date_str = d.strftime("%Y-%m-%d")
+        return date_str if _in_date_range(date_str, date_from, date_to) else None
+    except Exception:
+        return date_to
+
+
+def _extract_yt_initial_data(html: str) -> Optional[dict]:
+    """Extract ytInitialData JSON from a YouTube page using raw_decode (no regex truncation)."""
+    marker = "ytInitialData = "
+    idx = html.find(marker)
+    if idx == -1:
+        return None
+    try:
+        data, _ = json.JSONDecoder().raw_decode(html, idx + len(marker))
+        return data
+    except Exception:
+        return None
+
+
 def _scrape_youtube(
     keywords: list[str], brands: list[str],
     date_from: str, date_to: str, category: str,
 ) -> Optional[pd.DataFrame]:
-    # One search query per brand + a few keyword queries.
-    # "Apple MacBook India review 2024" gives far better results than one generic query.
-    search_queries: list[str] = []
+    """
+    Native YouTube scraper — parses ytInitialData from the search results page.
+    No Apify actor or API key required. Falls back to Apify if native returns nothing.
+    """
     year = datetime.now().year
-    for brand in brands[:5]:
+    search_queries: list[str] = []
+    for brand in brands[:4]:
         search_queries.append(f"{brand} India review {year}")
-    for kw in keywords[:4]:
+    for kw in keywords[:3]:
         search_queries.append(f"{kw} India")
 
-    # streamers~youtube-scraper expects searchKeywords as a newline-separated STRING,
-    # not a list. Passing a list causes the actor to FAIL immediately with no details.
+    rows: list[dict] = []
+    seen_ids: set[str] = set()
+    skipped_date = 0
+    skipped_india = 0
+
+    for query in search_queries[:6]:
+        url = f"https://www.youtube.com/results?search_query={quote(query)}&sp=CAI%3D"
+        try:
+            resp = requests.get(url, headers=_YT_HEADERS, timeout=20)
+            resp.raise_for_status()
+        except Exception as e:
+            logger.debug(f"YouTube native [{query}]: {e}")
+            time.sleep(1.0)
+            continue
+
+        data = _extract_yt_initial_data(resp.text)
+        if not data:
+            logger.debug(f"YouTube native [{query}]: ytInitialData not found")
+            time.sleep(1.0)
+            continue
+
+        # Navigate to video results — structure:
+        # contents → twoColumnSearchResultsRenderer → primaryContents →
+        # sectionListRenderer → contents[] → itemSectionRenderer → contents[]
+        try:
+            sections = (
+                data["contents"]["twoColumnSearchResultsRenderer"]
+                    ["primaryContents"]["sectionListRenderer"]["contents"]
+            )
+        except (KeyError, TypeError):
+            logger.debug(f"YouTube native [{query}]: unexpected page structure")
+            time.sleep(1.0)
+            continue
+
+        for section in sections:
+            for item in section.get("itemSectionRenderer", {}).get("contents", []):
+                vid = item.get("videoRenderer", {})
+                if not vid:
+                    continue
+
+                video_id = vid.get("videoId", "")
+                if not video_id or video_id in seen_ids:
+                    continue
+                seen_ids.add(video_id)
+
+                # Title
+                try:
+                    title = vid["title"]["runs"][0]["text"]
+                except (KeyError, IndexError):
+                    title = ""
+
+                # Description snippet
+                try:
+                    desc = " ".join(
+                        r.get("text", "")
+                        for r in vid.get("descriptionSnippet", {}).get("runs", [])
+                    )
+                except Exception:
+                    desc = ""
+
+                text = f"{title} {desc}".strip()
+                if len(text) < 30:
+                    continue
+
+                # Channel
+                try:
+                    channel = (
+                        vid.get("longBylineText", {}).get("runs", [{}])[0].get("text", "") or
+                        vid.get("ownerText", {}).get("runs", [{}])[0].get("text", "")
+                    )
+                except Exception:
+                    channel = ""
+
+                # View count
+                try:
+                    view_str = (
+                        vid.get("viewCountText", {}).get("simpleText", "") or
+                        vid.get("viewCountText", {}).get("runs", [{}])[0].get("text", "0")
+                    )
+                    views = int("".join(c for c in view_str if c.isdigit()) or "0")
+                except Exception:
+                    views = 0
+
+                # Date — YouTube gives relative time, convert to absolute
+                pub_time = vid.get("publishedTimeText", {}).get("simpleText", "")
+                date_str = _parse_yt_relative_date(pub_time, date_from, date_to)
+                if date_str is None:
+                    skipped_date += 1
+                    continue
+
+                # India context — search queries include "India" so title already signals it
+                combined = f"India {text}"
+                if not _is_india_context(combined, ""):
+                    skipped_india += 1
+                    continue
+
+                author_hash = hashlib.md5(channel.encode()).hexdigest()[:10]
+                rows.append({
+                    "date":         date_str,
+                    "source":       "youtube",
+                    "category":     category,
+                    "brand":        _detect_brand(combined, brands),
+                    "topic":        title[:120],
+                    "url":          f"https://www.youtube.com/watch?v={video_id}",
+                    "author":       f"user_{author_hash}",
+                    "text":         text[:1500],
+                    "engagement":   views,
+                    "raw_metadata": json.dumps({
+                        "video_id":      video_id,
+                        "channel":       channel,
+                        "published_time": pub_time,
+                    }),
+                })
+
+        time.sleep(1.2)
+
+    logger.info(
+        f"YouTube native: {len(rows)} videos kept "
+        f"({skipped_date} outside date range, {skipped_india} non-India dropped)"
+    )
+
+    if rows:
+        return pd.DataFrame(rows, columns=NORMALIZED_COLUMNS)
+
+    # Apify fallback — only reached if native returns nothing
+    logger.info("YouTube native returned 0 rows — attempting Apify fallback")
     actor_input = {
-        "searchKeywords": "\n".join(search_queries[:8]),
+        "searchKeywords": "\n".join(search_queries[:6]),
         "maxResults": 20,
-        "downloadComments": True,
-        "maxComments": 30,
-        "gl": "IN",
-        "hl": "en",
+        "downloadComments": False,
     }
-    actor_id = settings.APIFY_YOUTUBE_ACTOR
-    items = _run_apify_actor(actor_id, actor_input)
+    items = _run_apify_actor(settings.APIFY_YOUTUBE_ACTOR, actor_input)
     if not items:
         return None
 
-    rows, skipped, skipped_non_india = [], 0, 0
+    apify_rows = []
     for item in items:
-        # Items can be videos or comments
-        text = item.get("text", item.get("comment", item.get("description", "")))
+        text = item.get("text", item.get("description", ""))
         if len(str(text)) < 30:
             continue
-
-        raw_date = item.get("date", item.get("publishedAt", item.get("publishedTime", "")))
+        raw_date = item.get("date", item.get("publishedAt", ""))
         try:
             date_str = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00")).strftime("%Y-%m-%d")
         except Exception:
             date_str = datetime.now().strftime("%Y-%m-%d")
-
         if not _in_date_range(date_str, date_from, date_to):
-            skipped += 1
             continue
-
-        title = item.get("title", item.get("videoTitle", ""))
-        # YouTube comments can come from anywhere; require India signal in comment text.
-        # Video titles already include "India" via search query so those pass implicitly.
-        combined_text = f"{title} {text}"
-        if not _is_india_context(combined_text, ""):
-            skipped_non_india += 1
-            continue
-
+        title = item.get("title", "")
         channel = item.get("channelName", item.get("author", ""))
         author_hash = hashlib.md5(str(channel).encode()).hexdigest()[:10]
-
-        rows.append({
+        apify_rows.append({
             "date": date_str, "source": "youtube", "category": category,
-            "brand": _detect_brand(combined_text, brands),
+            "brand": _detect_brand(f"India {title} {text}", brands),
             "topic": title[:120],
-            "url": item.get("url", item.get("videoUrl", "")),
+            "url": item.get("url", ""),
             "author": f"user_{author_hash}",
             "text": str(text)[:1500],
             "engagement": item.get("likes", item.get("viewCount", 0)),
-            "raw_metadata": json.dumps({
-                "video_title": title[:100],
-                "channel": channel,
-            }),
+            "raw_metadata": json.dumps({"video_title": title[:100], "channel": channel}),
         })
 
-    logger.info(f"YouTube: {len(rows)} kept, {skipped} outside date range, {skipped_non_india} non-India dropped")
-    return pd.DataFrame(rows, columns=NORMALIZED_COLUMNS) if rows else None
+    logger.info(f"YouTube Apify fallback: {len(apify_rows)} rows")
+    return pd.DataFrame(apify_rows, columns=NORMALIZED_COLUMNS) if apify_rows else None
 
 
 # ── Amazon Reviews ────────────────────────────────────────────
