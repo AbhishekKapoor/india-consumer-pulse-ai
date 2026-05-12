@@ -791,42 +791,87 @@ def _scrape_reddit_via_apify(
     keywords: list[str], brands: list[str],
     date_from: str, date_to: str, category: str,
 ) -> Optional[pd.DataFrame]:
-    """Apify-based Reddit scrape (recent data only, used as fallback)."""
-    searches = [{"type": "posts", "keywords": kw} for kw in keywords[:8]]
-    for sub in _INDIA_SUBREDDITS[:4]:
-        searches.append({"type": "posts", "subreddit": sub, "keywords": " OR ".join(keywords[:3])})
-    actor_input = {"searches": searches, "maxItems": 500, "proxy": {"useApifyProxy": True}}
+    """
+    Apify Reddit scrape using trudax/reddit-scraper-lite.
+    Input schema: startUrls array of Reddit search page URLs.
+    Works from cloud hosting via Apify's residential proxies.
+    """
+    try:
+        d1 = datetime.strptime(date_from, "%Y-%m-%d")
+        d2 = datetime.strptime(date_to, "%Y-%m-%d")
+        days = max(1, (d2 - d1).days)
+    except Exception:
+        days = 7
+    time_filter = _days_to_reddit_filter(days)
+
+    # Build Reddit search URLs — one per keyword across the Indian subreddit cluster
+    start_urls: list[dict] = []
+    for kw in keywords[:6]:
+        kw_enc = quote(kw)
+        # Search across Indian subreddit cluster
+        start_urls.append({
+            "url": f"https://www.reddit.com/r/{_INDIA_SUB_CLUSTER}/search/?q={kw_enc}&sort=new&t={time_filter}&restrict_sr=on"
+        })
+    # Also browse focused subreddits by keyword
+    for sub in _FOCUSED_SUBS[:3]:
+        kw_enc = quote(" OR ".join(keywords[:3]))
+        start_urls.append({
+            "url": f"https://www.reddit.com/r/{sub}/search/?q={kw_enc}&sort=new&t={time_filter}&restrict_sr=on"
+        })
+
+    actor_input = {"startUrls": start_urls, "maxItems": 300}
+    logger.info(f"Apify Reddit: {len(start_urls)} search URLs, t={time_filter}, maxItems=300")
+
     items = _run_apify_actor(settings.APIFY_REDDIT_ACTOR, actor_input)
     if not items:
         return None
 
-    rows, skipped = [], 0
+    rows, skipped_date, skipped_india, skipped_short = [], 0, 0, 0
     for item in items:
-        title    = item.get("title", "")
-        body     = item.get("body", item.get("text", ""))
-        text     = f"{title} {body}".strip()
+        title = item.get("title", "")
+        body  = item.get("body", "")
+        text  = f"{title} {body}".strip()
         if len(text) < 30:
+            skipped_short += 1
             continue
-        raw_date = item.get("createdAt", item.get("created_at", ""))
+
+        raw_date = item.get("createdAt", item.get("scrapedAt", ""))
         try:
-            date_str = datetime.fromisoformat(raw_date.replace("Z", "+00:00")).strftime("%Y-%m-%d")
+            date_str = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00")).strftime("%Y-%m-%d")
         except Exception:
             date_str = datetime.now().strftime("%Y-%m-%d")
         if not _in_date_range(date_str, date_from, date_to):
-            skipped += 1
+            skipped_date += 1
             continue
-        author_hash = hashlib.md5(item.get("author", "anon").encode()).hexdigest()[:10]
+
+        subreddit = item.get("parsedCommunityName", item.get("communityName", "")).lstrip("r/")
+        if not _is_india_context(text, subreddit):
+            skipped_india += 1
+            continue
+
+        author = item.get("username", item.get("userId", "anon"))
+        author_hash = hashlib.md5(str(author).encode()).hexdigest()[:10]
         rows.append({
-            "date": date_str, "source": "reddit", "category": category,
-            "brand": _detect_brand(text, brands), "topic": title[:120],
-            "url": item.get("url", ""), "author": f"user_{author_hash}",
-            "text": text[:1500], "engagement": item.get("score", 0),
+            "date":         date_str,
+            "source":       "reddit",
+            "category":     category,
+            "brand":        _detect_brand(text, brands),
+            "topic":        title[:120],
+            "url":          item.get("url", ""),
+            "author":       f"user_{author_hash}",
+            "text":         text[:1500],
+            "engagement":   item.get("upVotes", item.get("score", 0)),
             "raw_metadata": json.dumps({
-                "subreddit": item.get("subreddit", ""),
-                "num_comments": item.get("numComments", 0),
+                "subreddit":    subreddit,
+                "num_comments": item.get("numberOfComments", 0),
+                "upvote_ratio": item.get("upVoteRatio", 0),
             }),
         })
-    logger.info(f"Apify Reddit: {len(rows)} kept, {skipped} outside date range")
+
+    logger.info(
+        f"Apify Reddit: {len(rows)} kept "
+        f"({skipped_date} outside date, {skipped_india} non-India, {skipped_short} too short)"
+    )
     return pd.DataFrame(rows, columns=NORMALIZED_COLUMNS) if rows else None
 
 
