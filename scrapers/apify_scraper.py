@@ -150,7 +150,7 @@ def _run_apify_actor(actor_id: str, input_data: dict) -> Optional[list[dict]]:
         start = requests.post(
             f"{base}/acts/{actor_id}/runs",
             headers=headers,
-            json={"input": input_data},
+            json=input_data,
             timeout=30,
         )
         start.raise_for_status()
@@ -278,7 +278,17 @@ def _scrape_reddit(
     except Exception:
         days = 7
 
-    logger.info(f"Reddit: {days}-day range — using native JSON API (no auth required)")
+    # When running with an Apify token (e.g. on cloud hosting where Reddit blocks datacenter IPs),
+    # use the Apify actor first — it routes through residential proxies that Reddit accepts.
+    if settings.apify_configured:
+        logger.info(f"Reddit: Apify token present — trying actor first (avoids cloud IP blocks)")
+        df = _scrape_reddit_via_apify(keywords, brands, date_from, date_to, category)
+        if df is not None and not df.empty:
+            logger.info(f"Reddit: Apify actor returned {len(df)} records")
+            return df
+        logger.info("Reddit: Apify actor returned no data — falling back to native API")
+
+    logger.info(f"Reddit: {days}-day range — using native JSON API")
     df = _scrape_reddit_native(keywords, brands, date_from, date_to, category, days)
 
     # Supplement with PullPush comments if native returned data and range is ≥ 3 days
