@@ -510,6 +510,10 @@ def _reddit_new_listing(
     return results
 
 
+# Arctic Shift — Pushshift-compatible Reddit archive, more reliable from cloud than PullPush
+_ARCTIC_SHIFT_POST_BASE    = "https://arctic-shift.photon-reddit.com/api/posts/search"
+_ARCTIC_SHIFT_COMMENT_BASE = "https://arctic-shift.photon-reddit.com/api/comments/search"
+
 _PULLPUSH_COMMENT_BASE = "https://api.pullpush.io/reddit/search/comment/"
 
 _EXTENDED_INDIA_SUBREDDITS = [
@@ -519,48 +523,60 @@ _EXTENDED_INDIA_SUBREDDITS = [
 ]
 
 
+def _archive_paginated(
+    base_url: str,
+    params: dict,
+    seen_ids: set,
+    max_per_query: int = 300,
+    size_key: str = "limit",
+) -> list[dict]:
+    """
+    Fetch up to max_per_query items from a Pushshift-compatible Reddit archive.
+    Paginates by moving 'before' cursor to the oldest timestamp in each page.
+    Works with Arctic Shift (size_key='limit') and PullPush (size_key='size').
+    """
+    collected: list[dict] = []
+    before_ts = params["before"]
+    page_size = min(100, max_per_query)
+
+    for _ in range(max_per_query // page_size + 1):
+        page_params = {**params, "before": before_ts, size_key: page_size}
+        try:
+            resp = requests.get(base_url, params=page_params, timeout=30)
+            resp.raise_for_status()
+            batch = resp.json().get("data", [])
+        except Exception as e:
+            logger.debug(f"Archive page failed ({base_url}): {e}")
+            break
+
+        if not batch:
+            break
+
+        for item in batch:
+            pid = item.get("id")
+            if pid and pid not in seen_ids:
+                seen_ids.add(pid)
+                collected.append(item)
+
+        if len(collected) >= max_per_query:
+            break
+
+        oldest_ts = min(item.get("created_utc", before_ts) for item in batch)
+        if oldest_ts >= before_ts or len(batch) < page_size:
+            break
+        before_ts = oldest_ts - 1
+        time.sleep(0.8)
+
+    return collected[:max_per_query]
+
+
 def _pullpush_paginated(
     base_url: str,
     params: dict,
     seen_ids: set,
     max_per_query: int = 300,
 ) -> list[dict]:
-    """
-    Fetch up to max_per_query items from PullPush using cursor-based pagination.
-    Each page returns up to 100 items; pages by moving 'before' to oldest timestamp.
-    """
-    collected: list[dict] = []
-    before_ts = params["before"]
-
-    for page in range(max_per_query // 100):
-        page_params = {**params, "before": before_ts}
-        try:
-            resp = requests.get(base_url, params=page_params, timeout=30)
-            resp.raise_for_status()
-            batch = resp.json().get("data", [])
-        except Exception as e:
-            logger.debug(f"PullPush page {page + 1} failed: {e}")
-            break
-
-        if not batch:
-            break
-
-        added = 0
-        for item in batch:
-            pid = item.get("id")
-            if pid and pid not in seen_ids:
-                seen_ids.add(pid)
-                collected.append(item)
-                added += 1
-
-        # Advance cursor to just before the oldest post in this batch
-        oldest_ts = min(item.get("created_utc", before_ts) for item in batch)
-        if oldest_ts >= before_ts or len(batch) < 100:
-            break   # no more pages
-        before_ts = oldest_ts - 1
-        time.sleep(0.8)
-
-    return collected
+    return _archive_paginated(base_url, params, seen_ids, max_per_query, size_key="size")
 
 
 def _scrape_pullpush_comments_only(
@@ -568,38 +584,37 @@ def _scrape_pullpush_comments_only(
     date_from: str, date_to: str, category: str,
 ) -> Optional[pd.DataFrame]:
     """
-    Fetch Reddit comments via PullPush.io to supplement native-API post data.
-    Comments aren't available from the native API without OAuth, so PullPush
-    is used as a bonus layer when it's available.
+    Fetch Reddit comments via Arctic Shift to supplement native-API post data.
+    Comments aren't available from the native API without OAuth.
     """
     d1 = datetime.strptime(date_from, "%Y-%m-%d")
     d2 = datetime.strptime(date_to, "%Y-%m-%d")
     after_ts  = int(d1.timestamp())
     before_ts = int(d2.timestamp()) + 86400
-    base_params = {"after": after_ts, "before": before_ts, "size": 100}
+    base_params = {"after": after_ts, "before": before_ts, "sort": "desc"}
 
     all_comments: list[dict] = []
     seen_ids: set[str] = set()
 
     for kw in keywords[:6]:
-        fetched = _pullpush_paginated(
-            _PULLPUSH_COMMENT_BASE, {**base_params, "q": kw}, seen_ids, max_per_query=200
+        fetched = _archive_paginated(
+            _ARCTIC_SHIFT_COMMENT_BASE, {**base_params, "q": kw}, seen_ids, max_per_query=200
         )
         all_comments.extend(fetched)
-        logger.debug(f"PullPush comments [{kw}]: {len(fetched)}")
+        logger.debug(f"Arctic Shift comments [{kw}]: {len(fetched)}")
         time.sleep(0.5)
 
     for sub in _EXTENDED_INDIA_SUBREDDITS[:4]:
-        fetched = _pullpush_paginated(
-            _PULLPUSH_COMMENT_BASE,
+        fetched = _archive_paginated(
+            _ARCTIC_SHIFT_COMMENT_BASE,
             {**base_params, "subreddit": sub, "q": " OR ".join(keywords[:4])},
             seen_ids, max_per_query=200,
         )
         all_comments.extend(fetched)
-        logger.debug(f"PullPush comments [r/{sub}]: {len(fetched)}")
+        logger.debug(f"Arctic Shift comments [r/{sub}]: {len(fetched)}")
         time.sleep(0.5)
 
-    logger.info(f"PullPush comments: {len(all_comments)} raw before filtering")
+    logger.info(f"Arctic Shift comments: {len(all_comments)} raw before filtering")
     rows = []
     skipped_irrelevant = 0
     skipped_non_india = 0
@@ -643,8 +658,9 @@ def _scrape_reddit_historical(
     date_from: str, date_to: str, category: str,
 ) -> Optional[pd.DataFrame]:
     """
-    Fetch Reddit posts + comments via PullPush.io.
-    Used as fallback when the native Reddit API returns nothing.
+    Fetch Reddit posts + comments via Arctic Shift (arctic-shift.photon-reddit.com).
+    Arctic Shift is a Pushshift-compatible archive that works from cloud hosting.
+    Falls back to PullPush if Arctic Shift returns nothing.
     """
     d1 = datetime.strptime(date_from, "%Y-%m-%d")
     d2 = datetime.strptime(date_to, "%Y-%m-%d")
@@ -655,54 +671,59 @@ def _scrape_reddit_historical(
     all_comments: list[dict] = []
     seen_ids: set[str] = set()
 
-    # sort_type=created_utc (default, newest first) is required for cursor-based pagination.
-    # sort=score would return top-100 across the whole range on page 1, killing further pages.
-    base_params = {"after": after_ts, "before": before_ts, "size": 100, "sort_type": "created_utc", "sort": "desc"}
+    base_params = {"after": after_ts, "before": before_ts, "sort": "desc"}
 
-    # ── Posts: per keyword (paginated) ───────────────────────
+    # ── Posts via Arctic Shift ────────────────────────────────
     for kw in keywords[:8]:
-        fetched = _pullpush_paginated(
-            _PULLPUSH_BASE, {**base_params, "q": kw}, seen_ids, max_per_query=300
+        fetched = _archive_paginated(
+            _ARCTIC_SHIFT_POST_BASE, {**base_params, "q": kw}, seen_ids, max_per_query=300
         )
         all_posts.extend(fetched)
-        logger.debug(f"PullPush posts [{kw}]: {len(fetched)}")
+        logger.debug(f"Arctic Shift posts [{kw}]: {len(fetched)}")
         time.sleep(0.5)
 
-    # ── Posts: per Indian subreddit (paginated) ───────────────
     for sub in _EXTENDED_INDIA_SUBREDDITS[:6]:
-        fetched = _pullpush_paginated(
-            _PULLPUSH_BASE,
+        fetched = _archive_paginated(
+            _ARCTIC_SHIFT_POST_BASE,
             {**base_params, "subreddit": sub, "q": " OR ".join(keywords[:5])},
-            seen_ids,
-            max_per_query=200,
+            seen_ids, max_per_query=200,
         )
         all_posts.extend(fetched)
-        logger.debug(f"PullPush posts [r/{sub}]: {len(fetched)}")
+        logger.debug(f"Arctic Shift posts [r/{sub}]: {len(fetched)}")
         time.sleep(0.5)
 
-    # ── Comments: per keyword (higher volume than posts) ──────
+    # ── Comments via Arctic Shift ─────────────────────────────
     for kw in keywords[:6]:
-        fetched = _pullpush_paginated(
-            _PULLPUSH_COMMENT_BASE, {**base_params, "q": kw}, seen_ids, max_per_query=200
+        fetched = _archive_paginated(
+            _ARCTIC_SHIFT_COMMENT_BASE, {**base_params, "q": kw}, seen_ids, max_per_query=200
         )
         all_comments.extend(fetched)
-        logger.debug(f"PullPush comments [{kw}]: {len(fetched)}")
+        logger.debug(f"Arctic Shift comments [{kw}]: {len(fetched)}")
         time.sleep(0.5)
 
-    # ── Comments: key Indian subreddits ──────────────────────
     for sub in _EXTENDED_INDIA_SUBREDDITS[:4]:
-        fetched = _pullpush_paginated(
-            _PULLPUSH_COMMENT_BASE,
+        fetched = _archive_paginated(
+            _ARCTIC_SHIFT_COMMENT_BASE,
             {**base_params, "subreddit": sub, "q": " OR ".join(keywords[:4])},
-            seen_ids,
-            max_per_query=200,
+            seen_ids, max_per_query=200,
         )
         all_comments.extend(fetched)
-        logger.debug(f"PullPush comments [r/{sub}]: {len(fetched)}")
+        logger.debug(f"Arctic Shift comments [r/{sub}]: {len(fetched)}")
         time.sleep(0.5)
+
+    # ── Fallback to PullPush if Arctic Shift returned nothing ─
+    if not all_posts and not all_comments:
+        logger.info("Arctic Shift returned nothing — trying PullPush fallback")
+        pp_params = {**base_params, "sort_type": "created_utc"}
+        for kw in keywords[:6]:
+            fetched = _pullpush_paginated(
+                _PULLPUSH_BASE, {**pp_params, "q": kw}, seen_ids, max_per_query=200
+            )
+            all_posts.extend(fetched)
+            time.sleep(0.5)
 
     logger.info(
-        f"PullPush: {len(all_posts)} posts + {len(all_comments)} comments "
+        f"Reddit archive: {len(all_posts)} posts + {len(all_comments)} comments "
         f"= {len(all_posts) + len(all_comments)} total before filtering"
     )
 
