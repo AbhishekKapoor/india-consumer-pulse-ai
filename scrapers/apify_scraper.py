@@ -280,26 +280,31 @@ def _scrape_reddit(
     except Exception:
         days = 7
 
-    logger.info(f"Reddit: {days}-day range — using native JSON API")
+    # Fallback chain (each layer only runs if the previous returned 0):
+    # 1. Native Reddit JSON API  — works from residential IPs (local), blocked on cloud
+    # 2. Reddit RSS feeds        — free, no key, may bypass cloud IP block
+    # 3. Arctic Shift archive    — free, no key, but lags recent data by weeks
+    # 4. Apify                   — residential proxies, always works, $0.004/result
+    logger.info(f"Reddit: {days}-day range — trying native JSON API")
     df = _scrape_reddit_native(keywords, brands, date_from, date_to, category, days)
 
-    # If native returned nothing, fall back to historical archive.
-    # Historical already fetches both posts and comments, so we skip the
-    # comment supplement below to avoid a redundant second round of requests.
     used_historical = False
     if df is None or df.empty:
-        logger.warning("Reddit native API returned 0 rows — falling back to historical archive")
+        logger.warning("Reddit native API returned 0 rows — trying RSS feeds")
+        df = _scrape_reddit_rss(keywords, brands, date_from, date_to, category)
+        used_historical = bool(df is not None and not df.empty)
+
+    if df is None or df.empty:
+        logger.warning("Reddit RSS returned 0 rows — falling back to historical archive")
         df = _scrape_reddit_historical(keywords, brands, date_from, date_to, category)
         used_historical = True
 
-    # Final fallback: Apify (cloud-hosting fallback when Reddit blocks datacenter IPs).
-    # Native API and Arctic Shift both fail from cloud servers — Apify uses residential
-    # proxies and reliably returns data. Capped at 100 results ($0.40/run) to stay within
-    # the $5 Apify credit limit (~12 demo runs).
+    # Final fallback: Apify (residential proxies, works from any IP).
+    # Capped at 300 results (~$1.20/run) to stay within $5 Apify credit.
     if (df is None or df.empty) and settings.apify_configured:
         logger.warning(
             "Reddit archive returned 0 rows — activating Apify cloud fallback "
-            "(capped at 100 results, ~$0.40/run)"
+            "(capped at 300 results, ~$1.20/run)"
         )
         df = _scrape_reddit_via_apify(keywords, brands, date_from, date_to, category)
         used_historical = True  # skip comment supplement — Apify already includes post bodies
@@ -517,6 +522,153 @@ def _reddit_new_listing(
         time.sleep(1.5)
 
     return results
+
+
+# ── Reddit RSS ────────────────────────────────────────────────
+# Reddit exposes Atom/RSS feeds served from a different stack than the JSON API.
+# These sometimes work from cloud IPs where the JSON API is blocked.
+
+_REDDIT_RSS_SUBS = [
+    "india", "GadgetsIndia", "indiangaming", "suggestalaptop",
+    "laptops", "IndiaInvestments", "techIndia",
+]
+
+
+def _scrape_reddit_rss(
+    keywords: list[str], brands: list[str],
+    date_from: str, date_to: str, category: str,
+) -> Optional[pd.DataFrame]:
+    """
+    Reddit RSS/Atom feeds — free alternative path that may bypass cloud IP blocks.
+    Searches up to 6 keywords across 7 India-focused subreddits.
+    Each feed returns up to 25 posts; no API key required.
+    """
+    rows: list[dict] = []
+    seen_ids: set[str] = set()
+    rss_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/rss+xml, application/atom+xml, text/xml, */*",
+    }
+
+    for sub in _REDDIT_RSS_SUBS:
+        for kw in keywords[:6]:
+            query = quote(f"{kw} India")
+            url = (
+                f"https://www.reddit.com/r/{sub}/search.rss"
+                f"?q={query}&sort=new&t=year&restrict_sr=on"
+            )
+            try:
+                resp = requests.get(url, headers=rss_headers, timeout=15)
+                if resp.status_code in (429, 403):
+                    logger.debug(f"Reddit RSS [{sub}/{kw}]: blocked ({resp.status_code})")
+                    time.sleep(2)
+                    continue
+                resp.raise_for_status()
+                root = ET.fromstring(resp.content)
+            except Exception as e:
+                logger.debug(f"Reddit RSS [{sub}/{kw}]: {e}")
+                time.sleep(0.5)
+                continue
+
+            # Atom namespace Reddit uses
+            ns = {"atom": "http://www.w3.org/2005/Atom"}
+            entries = root.findall("atom:entry", ns) or root.findall("entry")
+            # Also handle RSS 2.0 <item> format
+            if not entries:
+                channel = root.find("channel")
+                entries = channel.findall("item") if channel is not None else []
+
+            for entry in entries:
+                # Extract fields from both Atom and RSS formats
+                post_id = (
+                    _xml_text(entry, "id", ns) or
+                    _xml_text(entry, "guid")
+                )
+                if not post_id or post_id in seen_ids:
+                    continue
+                seen_ids.add(post_id)
+
+                title   = _xml_text(entry, "atom:title", ns) or _xml_text(entry, "title") or ""
+                content = (
+                    _xml_text(entry, "atom:content", ns) or
+                    _xml_text(entry, "atom:summary", ns) or
+                    _xml_text(entry, "description") or ""
+                )
+                # Strip HTML tags from content
+                content = re.sub(r"<[^>]+>", " ", content).strip()
+                text = f"{title} {content}".strip()
+                if len(text) < 30:
+                    continue
+
+                link = (
+                    _xml_attr(entry, "atom:link", "href", ns) or
+                    _xml_text(entry, "link") or
+                    _xml_text(entry, "atom:link", ns) or ""
+                )
+                pub_date = (
+                    _xml_text(entry, "atom:published", ns) or
+                    _xml_text(entry, "atom:updated", ns) or
+                    _xml_text(entry, "pubDate") or ""
+                )
+                try:
+                    from email.utils import parsedate_to_datetime as _pdt
+                    date_str = _pdt(pub_date).strftime("%Y-%m-%d")
+                except Exception:
+                    try:
+                        date_str = datetime.fromisoformat(
+                            pub_date.replace("Z", "+00:00")
+                        ).strftime("%Y-%m-%d")
+                    except Exception:
+                        date_str = date_to
+
+                if not _in_date_range(date_str, date_from, date_to):
+                    continue
+                if not _is_relevant(text, keywords, brands):
+                    continue
+                if not _is_india_context(text, sub):
+                    continue
+
+                author_raw = _xml_text(entry, "atom:author/atom:name", ns) or "anon"
+                author_hash = hashlib.md5(author_raw.encode()).hexdigest()[:10]
+                rows.append({
+                    "date":         date_str,
+                    "source":       "reddit",
+                    "category":     category,
+                    "brand":        _detect_brand(text, brands),
+                    "topic":        title[:120],
+                    "url":          link,
+                    "author":       f"user_{author_hash}",
+                    "text":         text[:1500],
+                    "engagement":   0,
+                    "raw_metadata": json.dumps({"subreddit": sub, "type": "rss_post"}),
+                })
+
+            time.sleep(0.8)
+
+    logger.info(f"Reddit RSS: {len(rows)} rows from {len(seen_ids)} unique entries")
+    return pd.DataFrame(rows, columns=NORMALIZED_COLUMNS) if rows else None
+
+
+def _xml_text(elem, tag: str, ns: dict = None) -> str:
+    """Safe XML text extraction supporting namespaced and plain tags."""
+    try:
+        child = elem.find(tag, ns) if ns else elem.find(tag)
+        return (child.text or "").strip() if child is not None else ""
+    except Exception:
+        return ""
+
+
+def _xml_attr(elem, tag: str, attr: str, ns: dict = None) -> str:
+    """Safe XML attribute extraction."""
+    try:
+        child = elem.find(tag, ns) if ns else elem.find(tag)
+        return (child.get(attr) or "").strip() if child is not None else ""
+    except Exception:
+        return ""
 
 
 # Arctic Shift — Pushshift-compatible Reddit archive, more reliable from cloud than PullPush
