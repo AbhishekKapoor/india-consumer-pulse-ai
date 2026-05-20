@@ -175,7 +175,7 @@ def _classify_batch_ai(
                                    {"positive", "negative", "neutral", "mixed"}),
             "theme": _safe_str(item.get("theme"), "general discussion"),
             "sub_theme": _safe_str(item.get("sub_theme"), "general"),
-            "pain_point": item.get("pain_point"),
+            "pain_point": _parse_nullable(item.get("pain_point")),
             "emotional_driver": _safe_str(
                 item.get("emotional_driver"), "curiosity",
                 {"aspiration", "frustration", "satisfaction", "disappointment",
@@ -293,3 +293,13 @@ def _safe_str(value, default: str, allowed: Optional[set] = None) -> str:
     if allowed and value.lower() not in allowed:
         return default
     return value.strip()
+
+
+def _parse_nullable(value) -> Optional[str]:
+    """Return None for falsy, JSON-literal 'null'/'none', or whitespace-only strings."""
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped or stripped.lower() in ("null", "none", "n/a", "na"):
+        return None
+    return stripped

@@ -283,13 +283,23 @@ def _scrape_reddit(
     logger.info(f"Reddit: {days}-day range — using native JSON API")
     df = _scrape_reddit_native(keywords, brands, date_from, date_to, category, days)
 
-    # Supplement with PullPush comments if native returned data and range is ≥ 3 days
-    if df is not None and not df.empty and days >= 3:
+    # If native returned nothing, fall back to historical archive.
+    # Historical already fetches both posts and comments, so we skip the
+    # comment supplement below to avoid a redundant second round of requests.
+    used_historical = False
+    if df is None or df.empty:
+        logger.warning("Reddit native API returned 0 rows — falling back to historical archive")
+        df = _scrape_reddit_historical(keywords, brands, date_from, date_to, category)
+        used_historical = True
+
+    # Supplement with Arctic Shift comments only when the native path succeeded.
+    # Skipped after historical fallback: historical already includes comments.
+    if not used_historical and df is not None and not df.empty and days >= 3:
         comment_df = _scrape_pullpush_comments_only(keywords, brands, date_from, date_to, category)
         if comment_df is not None and not comment_df.empty:
             df = pd.concat([df, comment_df], ignore_index=True)
             df = df.drop_duplicates(subset=["url", "text"]).reset_index(drop=True)
-            logger.info(f"Reddit total after PullPush comment supplement: {len(df)} records")
+            logger.info(f"Reddit total after Arctic Shift comment supplement: {len(df)} records")
 
     return df
 
@@ -370,10 +380,7 @@ def _scrape_reddit_native(
         f"Reddit native API: {len(rows)} rows kept "
         f"({skipped_irrelevant} off-topic, {skipped_non_india} non-India dropped)"
     )
-    if not rows:
-        logger.warning("Reddit native API returned 0 rows — falling back to PullPush historical")
-        return _scrape_reddit_historical(keywords, brands, date_from, date_to, category)
-    return pd.DataFrame(rows, columns=NORMALIZED_COLUMNS)
+    return pd.DataFrame(rows, columns=NORMALIZED_COLUMNS) if rows else None
 
 
 def _reddit_search_pages(

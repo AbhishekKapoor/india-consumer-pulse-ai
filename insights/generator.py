@@ -342,8 +342,11 @@ def generate_report_pdf(
             self.cell(70, 5.5, _safe(label[:38]))
             self.set_fill_color(*color)
             self.cell(bar_w, 5.5, "", fill=True)
-            self.set_fill_color(*LGREY)
-            self.cell(90 - bar_w, 5.5, "", fill=True)
+            grey_w = 90 - bar_w
+            if grey_w > 0:  # skip when 0 — FPDF cell(0) expands to right margin, pushing count off-page
+                self.set_fill_color(*LGREY)
+                self.cell(grey_w, 5.5, "", fill=True)
+            self.set_x(170)  # fixed position: 10 (margin) + 70 (label) + 90 (bar area)
             self.set_font("Helvetica", "B", 9)
             self.set_text_color(*NAVY)
             self.cell(20, 5.5, str(count), align="R", ln=True)
