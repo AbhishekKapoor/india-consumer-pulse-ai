@@ -835,10 +835,12 @@ def _scrape_reddit_via_apify(
         days = 7
     time_filter = _days_to_reddit_filter(days)
 
-    # Build Reddit search URLs — keywords × subreddit cluster + focused per-sub searches
+    # Build Reddit search URLs — append "India" to every keyword so posts from global
+    # subreddits (r/suggestalaptop, r/laptops) mention India in the text, letting them
+    # pass the India context filter instead of being dropped as non-India content.
     start_urls: list[dict] = []
     for kw in keywords[:8]:
-        kw_enc = quote(kw)
+        kw_enc = quote(f"{kw} India")
         start_urls.append({
             "url": f"https://www.reddit.com/r/{_INDIA_SUB_CLUSTER}/search/?q={kw_enc}&sort=new&t={time_filter}&restrict_sr=on"
         })
@@ -848,9 +850,9 @@ def _scrape_reddit_via_apify(
         start_urls.append({
             "url": f"https://www.reddit.com/r/{_INDIA_SUB_CLUSTER}/search/?q={brand_enc}&sort=new&t={time_filter}&restrict_sr=on"
         })
-    # Focused subreddits by combined keywords
+    # Focused subreddits — combined keywords + India
     for sub in _FOCUSED_SUBS[:4]:
-        kw_enc = quote(" OR ".join(keywords[:4]))
+        kw_enc = quote(" OR ".join(keywords[:4]) + " India")
         start_urls.append({
             "url": f"https://www.reddit.com/r/{sub}/search/?q={kw_enc}&sort=new&t={time_filter}&restrict_sr=on"
         })
