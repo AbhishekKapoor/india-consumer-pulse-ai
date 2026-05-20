@@ -857,8 +857,10 @@ def _scrape_reddit_via_apify(
             "url": f"https://www.reddit.com/r/{sub}/search/?q={kw_enc}&sort=new&t={time_filter}&restrict_sr=on"
         })
 
-    # Hard cap at 100 to stay within $5 Apify credit ($0.004/result × 100 = $0.40/run)
-    max_items = 100
+    # Cap at 300: $1.20/run → ~4 demo runs within $5 Apify credit.
+    # 300 raw items × ~50-60% India pass rate ≈ 150-180 Reddit records per run.
+    # Increase to 500+ for richer data if budget allows ($2/run → 2 runs within $5).
+    max_items = 300
     actor_input = {"startUrls": start_urls, "maxItems": max_items}
     logger.info(f"Apify Reddit: {len(start_urls)} search URLs, t={time_filter}, maxItems={max_items}")
 
