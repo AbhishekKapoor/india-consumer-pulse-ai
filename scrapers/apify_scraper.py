@@ -292,8 +292,20 @@ def _scrape_reddit(
         df = _scrape_reddit_historical(keywords, brands, date_from, date_to, category)
         used_historical = True
 
+    # Final fallback: Apify (cloud-hosting fallback when Reddit blocks datacenter IPs).
+    # Native API and Arctic Shift both fail from cloud servers — Apify uses residential
+    # proxies and reliably returns data. Capped at 100 results ($0.40/run) to stay within
+    # the $5 Apify credit limit (~12 demo runs).
+    if (df is None or df.empty) and settings.apify_configured:
+        logger.warning(
+            "Reddit archive returned 0 rows — activating Apify cloud fallback "
+            "(capped at 100 results, ~$0.40/run)"
+        )
+        df = _scrape_reddit_via_apify(keywords, brands, date_from, date_to, category)
+        used_historical = True  # skip comment supplement — Apify already includes post bodies
+
     # Supplement with Arctic Shift comments only when the native path succeeded.
-    # Skipped after historical fallback: historical already includes comments.
+    # Skipped after historical/Apify fallback to avoid double-fetching.
     if not used_historical and df is not None and not df.empty and days >= 3:
         comment_df = _scrape_pullpush_comments_only(keywords, brands, date_from, date_to, category)
         if comment_df is not None and not comment_df.empty:
@@ -843,8 +855,8 @@ def _scrape_reddit_via_apify(
             "url": f"https://www.reddit.com/r/{sub}/search/?q={kw_enc}&sort=new&t={time_filter}&restrict_sr=on"
         })
 
-    # ~20 items/day, minimum 300 — no upper cap (polling timeout scales below)
-    max_items = max(300, days * 20)
+    # Hard cap at 100 to stay within $5 Apify credit ($0.004/result × 100 = $0.40/run)
+    max_items = 100
     actor_input = {"startUrls": start_urls, "maxItems": max_items}
     logger.info(f"Apify Reddit: {len(start_urls)} search URLs, t={time_filter}, maxItems={max_items}")
 
